@@ -4,15 +4,25 @@ log "Setting up ${PROJECTS_DIR}"
 mkdir -p "$PROJECTS_DIR"
 template="$HB_ROOT/templates/projects-CLAUDE.md"
 target="$PROJECTS_DIR/CLAUDE.md"
-if [ ! -f "$target" ]; then
-  cp "$template" "$target"
-  ok "added ${target}"
+# Remember the checksum of the copy we installed, so later updates can replace
+# it automatically unless you have edited it yourself.
+stamp="$HB_CONFIG_DIR/projects-claude-md.sha256"
+if [ ! -f "$target" ] || { [ -f "$stamp" ] && sha256sum -c --status "$stamp" 2>/dev/null; }; then
+  if cmp -s "$template" "$target" 2>/dev/null; then
+    ok "${target} is up to date"
+  else
+    cp "$template" "$target"
+    ok "installed the latest ${target}"
+  fi
+  sha256sum "$target" > "$stamp"
 elif cmp -s "$template" "$target"; then
+  sha256sum "$target" > "$stamp"
   ok "${target} is up to date"
 else
   cp "$template" "${target}.homebase-new"
   warn "${target} has your own edits, so it was left alone."
   warn "The latest homebase version is in ${target}.homebase-new to compare."
+  warn "To use it: mv ${target}.homebase-new ${target}"
 fi
 
 if [ -z "$(git config --global user.name || true)" ] || [ -z "$(git config --global user.email || true)" ]; then
