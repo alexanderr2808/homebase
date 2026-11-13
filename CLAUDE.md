@@ -1,14 +1,59 @@
-# homebase repository
+# homebase
 
-Bash tooling that turns a Raspberry Pi 5 (Raspberry Pi OS Lite 64-bit, systemd,
-NetworkManager) into an always-on Claude Code Remote Control server.
+Bash tooling that turns a Raspberry Pi 5 (Raspberry Pi OS Lite 64-bit,
+systemd, NetworkManager) into an always-on Claude Code Remote Control
+server. Alex reaches it from his phone or PC, over Tailscale or Pi Connect,
+and it can wake his PC over a direct Ethernet cable. The installer is
+idempotent; `bin/homebase` is the everyday command.
 
-- `install.sh` must stay safe to re-run: every module checks before changing
-  anything. Modules in `modules/` are *sourced* by `install.sh` (they share its
-  helpers and `set -euo pipefail`); use `return`, not `exit`, to skip a step.
+## How work is done here: orchestrator and workers
+
+- The main session is the orchestrator. It plans, writes briefs and checks
+  results. It does not do bulk work itself when a worker can.
+- Workers are subagents on Haiku: `builder` (writes code to a brief) and
+  `reviewer` (checks a diff against a brief). See `.claude/agents/`.
+- Every brief states:
+  - **Goal:** what should be true afterwards, in one or two sentences.
+  - **Read:** the exact files the worker needs.
+  - **Done when:** a check that can be run or seen, e.g. a shellcheck
+    command that exits 0, a `grep` that finds or doesn't find a line,
+    or `bash -n` on a file.
+- Before accepting a worker's output, run its "Done when" check yourself.
+  If it fails, send the work back with the exact failure output. Never
+  pass on a worker's report unchecked.
+
+## Every session
+
+- **Start:** read this file, `docs/progress.md`, `docs/decisions.md` and
+  `docs/known-issues.md`.
+- **End:** update `docs/progress.md`; add new decisions to
+  `docs/decisions.md` and gotchas to `docs/known-issues.md`; run the
+  `reflect` skill to propose skill or CLAUDE.md edits, with evidence from
+  this session. Alex approves them before they are applied.
+
+## Repo rules
+
+- `install.sh` must stay safe to re-run: every module checks before
+  changing anything. Modules in `modules/` are *sourced* by `install.sh`
+  (they share its helpers and `set -euo pipefail`); use `return`, not
+  `exit`, to skip a step.
 - Run as the normal user; use `sudo` only for system changes.
 - Never restart the `homebase` service automatically: the Claude session
   editing this repo may be running inside it.
-- Lint with `shellcheck -x -e SC2016 install.sh bin/homebase lib/*.sh` and
-  `shellcheck -s bash modules/*.sh`.
+- Lint with `shellcheck -x -e SC2016 install.sh bin/homebase lib/*.sh`
+  and `shellcheck -s bash modules/*.sh`.
 - Keep the README's setup steps in sync with what the installer does.
+
+## Folder map
+
+    install.sh          installer; sources modules/*.sh in order
+    bin/homebase        the `homebase` command (linked into /usr/local/bin)
+    lib/common.sh       shared helpers and settings
+    lib/run-session.sh  runs in tmux; keeps `claude remote-control` alive
+    lib/netwatch.sh     network watchdog (every 2 min, as root)
+    modules/            one numbered file per install step (10-packages … 80-tailscale)
+    templates/          systemd units, journald/watchdog configs,
+                        config.example, projects-CLAUDE.md
+    docs/               progress.md, decisions.md, known-issues.md
+    .claude/agents/     builder.md, reviewer.md (Haiku workers)
+    .claude/skills/     reflect/ (end-of-session improvement proposals)

@@ -30,6 +30,8 @@ load_config() {
   CLAUDE_CMD="claude remote-control"
   PC_MAC=""
   WOL_IFACE="eth0"
+  CLAUDE_EFFORT="xhigh"
+  CLAUDE_AUTOCOMPACT_PCT="40"
   if [ -f "$HB_CONFIG" ]; then
     # shellcheck source=/dev/null
     . "$HB_CONFIG"
