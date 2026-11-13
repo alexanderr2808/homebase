@@ -161,6 +161,34 @@ and phone.
 
 5. Test it: shut the PC down, then on the Pi run `homebase wake pc`.
 
+**Remote desktop at the sign-in screen:** install RustDesk with **Install**
+(not "Run without installing") so it runs as a Windows service, and set a
+**permanent password** in its Security settings. You can then type your
+Windows PIN or password remotely after waking the PC.
+
+### Optional: sign in to Windows automatically
+
+So that `homebase wake pc` boots straight to the desktop. The trade-off:
+anyone who turns the PC on is signed straight into your account.
+
+1. **Settings → Accounts → Sign-in options**: turn off *"For improved
+   security, only allow Windows Hello sign-in for Microsoft accounts on this
+   device"*. Otherwise Windows hides automatic sign-in.
+2. Download **Autologon** from Microsoft Sysinternals
+   (learn.microsoft.com/sysinternals/downloads/autologon), unzip it and run
+   **Autologon64.exe**. Accept the license.
+3. *Username* and *Domain* are filled in already. Enter your account
+   **password** (for a Microsoft account, the account password, not your
+   PIN) and click **Enable**. Autologon stores it encrypted.
+4. Restart the PC to check it reaches the desktop without a sign-in screen.
+
+To turn it off, run Autologon again and click **Disable**.
+
+**Optional, sign in then lock:** startup apps run, but the screen stays
+locked. Task Scheduler → *Create Task* → *Triggers*: **At log on** (your
+user), delayed 30 seconds → *Actions*: start program `rundll32.exe` with
+arguments `user32.dll,LockWorkStation`.
+
 ## 7. Check everything
 
 ```
