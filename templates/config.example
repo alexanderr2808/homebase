@@ -1,0 +1,15 @@
+# homebase settings: ~/.config/homebase/config
+# Change these with:  homebase config KEY VALUE
+
+# Where Claude creates and works on projects.
+PROJECTS_DIR="$HOME/projects"
+
+# Command the always-on session runs (inside tmux).
+CLAUDE_CMD="claude remote-control"
+
+# MAC address of your PC's *Ethernet* adapter, for `homebase wake pc`.
+# On Windows: PowerShell -> Get-NetAdapter -> the "Ethernet" row.
+PC_MAC=""
+
+# Pi network port the PC is cabled to.
+WOL_IFACE="eth0"

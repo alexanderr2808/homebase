@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# homebase: manage the always-on Claude Code server on this Pi.
+set -euo pipefail
+
+HB_ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+export HB_ROOT
+# shellcheck source=lib/common.sh
+. "$HB_ROOT/lib/common.sh"
+load_config
+
+usage() {
+  cat <<EOF
+homebase: your always-on Claude Code server
+
+Session
+  status              Health overview: session, network, Tailscale, disk, temperature
+  start | stop | restart
+                      Control the always-on Claude Remote Control session
+  attach              Open the session's terminal (leave with Ctrl+B, then D)
+  logs [-f]           Recent session output (-f: follow the system logs live)
+
+Projects
+  new <name>          Create a project folder with git and a README
+  list                List projects
+
+PC
+  wake pc             Wake your PC over the Ethernet cable (Wake-on-LAN)
+
+Maintenance
+  doctor              Check the whole setup and explain how to fix problems
+  update [--system]   Pull the latest homebase and re-run the installer
+                      (--system also installs Raspberry Pi OS updates)
+  backup [device]     Copy this whole system onto a spare microSD card
+  config [KEY VALUE]  Show settings, or change one (e.g. homebase config PC_MAC AA:BB:..)
+  help                This help
+EOF
+}
+
+session_running() { tmux has-session -t "$HB_SESSION" 2>/dev/null; }
+
+cmd_status() {
+  echo "homebase on $(hostname), up $(uptime -p | sed 's/^up //')"
+  echo
+  if systemctl is-active --quiet "$HB_SERVICE" && session_running; then
+    ok "Claude session running (homebase attach to view)"
+  else
+    bad "Claude session not running (homebase start)"
+  fi
+
+  local ssid
+  ssid="$(nmcli -t -f ACTIVE,SSID,SIGNAL device wifi 2>/dev/null | awk -F: '$1=="yes"{print $2" ("$3"% signal)"; exit}' || true)"
+  if [ -n "$ssid" ]; then ok "WiFi: ${ssid}"; else bad "WiFi: not connected"; fi
+  if internet_ok; then ok "internet: reachable"; else bad "internet: unreachable"; fi
+
+  if have tailscale && tailscale status >/dev/null 2>&1; then
+    ok "Tailscale: connected ($(tailscale ip -4 2>/dev/null | head -1))"
+  else
+    bad "Tailscale: not connected (sudo tailscale up)"
+  fi
+
+  local eth
+  eth="$(cat "/sys/class/net/${WOL_IFACE}/operstate" 2>/dev/null || echo missing)"
+  if [ "$eth" = "up" ]; then ok "PC cable (${WOL_IFACE}): connected"; else warn "PC cable (${WOL_IFACE}): ${eth}"; fi
+
+  echo
+  df -h / | awk 'NR==2{printf "   disk:   %s used of %s (%s)\n", $3, $2, $5}'
+  free -h | awk '/^Mem:/{printf "   memory: %s used of %s\n", $3, $2}'
+  if have vcgencmd; then
+    printf '   temp:   %s\n' "$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2)"
+  fi
+  local fails
+  fails="$(cat /run/homebase/netwatch-fails 2>/dev/null || echo 0)"
+  [ "$fails" = 0 ] || warn "network watchdog: ${fails} failed checks in a row"
+}
+
+cmd_start()   { sudo systemctl start "$HB_SERVICE";   ok "started"; }
+cmd_stop()    { sudo systemctl stop "$HB_SERVICE";    ok "stopped"; }
+cmd_restart() { sudo systemctl restart "$HB_SERVICE"; ok "restarted"; }
+
+cmd_attach() {
+  session_running || die "session isn't running (homebase start)"
+  echo "Attaching. To leave without stopping it: press Ctrl+B, then D."
+  sleep 1
+  exec tmux attach -t "$HB_SESSION"
+}
+
+cmd_logs() {
+  if [ "${1:-}" = "-f" ]; then
+    exec journalctl -f -u "$HB_SERVICE" -u homebase-netwatch
+  fi
+  if session_running; then
+    tmux capture-pane -p -S -200 -t "$HB_SESSION" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+  else
+    warn "session isn't running; showing system logs instead"
+    journalctl -n 50 --no-pager -u "$HB_SERVICE" -u homebase-netwatch
+  fi
+}
+
+cmd_new() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: homebase new <name>"
+  [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || die "use letters, numbers, dots, dashes or underscores (no spaces)"
+  local dir="$PROJECTS_DIR/$name"
+  [ ! -e "$dir" ] || die "$dir already exists"
+  mkdir -p "$dir"
+  git -C "$dir" init -q -b main
+  printf '# %s\n\nTODO: describe this project and how to run it.\n' "$name" > "$dir/README.md"
+  printf '.env\n.env.*\nnode_modules/\n__pycache__/\n.venv/\n*.log\n' > "$dir/.gitignore"
+  if git -C "$dir" add -A && git -C "$dir" commit -q -m "Start ${name}" 2>/dev/null; then
+    ok "created $dir (git initialised, first commit made)"
+  else
+    ok "created $dir (git initialised; set git name/email to enable commits)"
+  fi
+}
+
+cmd_list() {
+  local found=0 d last
+  for d in "$PROJECTS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    found=1
+    last="$(git -C "$d" log -1 --format='%cr' 2>/dev/null || echo 'no commits')"
+    printf '  %-30s %s\n' "$(basename "$d")" "$last"
+  done
+  [ "$found" = 1 ] || echo "  (no projects yet; create one with: homebase new <name>)"
+}
+
+cmd_wake() {
+  [ "${1:-}" = "pc" ] || die "usage: homebase wake pc"
+  [ -n "$PC_MAC" ] || die "PC MAC address not set. On the PC run Get-NetAdapter in PowerShell, take the Ethernet MacAddress, then: homebase config PC_MAC <address>"
+  have etherwake || die "etherwake missing; run the installer again"
+  sudo etherwake -i "$WOL_IFACE" "$PC_MAC"
+  sleep 1
+  sudo etherwake -i "$WOL_IFACE" "$PC_MAC"
+  ok "wake signal sent to ${PC_MAC} via ${WOL_IFACE}. Give the PC a minute to start."
+}
+
+cmd_config() {
+  if [ $# -eq 0 ]; then
+    echo "Settings (${HB_CONFIG}):"
+    printf '  PROJECTS_DIR = %s\n  CLAUDE_CMD   = %s\n  PC_MAC       = %s\n  WOL_IFACE    = %s\n' \
+      "$PROJECTS_DIR" "$CLAUDE_CMD" "${PC_MAC:-(not set)}" "$WOL_IFACE"
+    return
+  fi
+  [ $# -eq 2 ] || die "usage: homebase config KEY VALUE"
+  local key="$1" value="$2"
+  case "$key" in
+    PC_MAC)
+      value="$(normalize_mac "$value")" || die "that doesn't look like a MAC address (e.g. D8-43-AE-12-34-56)" ;;
+    WOL_IFACE)
+      [ -e "/sys/class/net/$value" ] || die "no network interface called $value" ;;
+    PROJECTS_DIR|CLAUDE_CMD) ;;
+    *) die "unknown setting: $key (PROJECTS_DIR, CLAUDE_CMD, PC_MAC, WOL_IFACE)" ;;
+  esac
+  [[ "$value" != *'"'* && "$value" != *'$'* && "$value" != *'`'* ]] || die "value can't contain quotes, \$ or backticks"
+  set_config "$key" "$value"
+  ok "$key = $value"
+  case "$key" in PROJECTS_DIR|CLAUDE_CMD) warn "run 'homebase restart' to apply" ;; esac
+}
+
+cmd_doctor() {
+  local problems=0
+  check() { # check "description" "fix" command...
+    local desc="$1" fix="$2"; shift 2
+    if "$@" >/dev/null 2>&1; then ok "$desc"; else bad "$desc"; echo "     fix: $fix"; problems=$((problems + 1)); fi
+  }
+  echo "Checking homebase setup..."
+  check "Claude Code installed" "curl -fsSL https://claude.ai/install.sh | bash" have claude
+  check "Claude logged in" "run 'claude', sign in, then /exit" test -d "$HOME/.claude"
+  check "session service enabled at boot" "run ~/homebase/install.sh" systemctl is-enabled "$HB_SERVICE"
+  check "session running" "homebase start (then: homebase logs)" session_running
+  check "internet reachable" "check the WiFi; see 'homebase status'" internet_ok
+  check "Tailscale connected" "sudo tailscale up" tailscale status
+  check "network watchdog active" "run ~/homebase/install.sh" systemctl is-active homebase-netwatch.timer
+  check "logs kept in RAM (saves the microSD)" "run ~/homebase/install.sh" test -f /etc/systemd/journald.conf.d/homebase.conf
+  check "PC cable uses link-local addressing" "run ~/homebase/install.sh" \
+    bash -c "[ \"\$(nmcli -g ipv4.method connection show \"\$1\")\" = link-local ]" _ "$(eth_connection "$WOL_IFACE")"
+  check "PC MAC address set (for wake pc)" "homebase config PC_MAC <Ethernet MAC from Get-NetAdapter>" test -n "$PC_MAC"
+  check "git name and email set" "git config --global user.name \"...\"; git config --global user.email \"...\"" \
+    bash -c 'test -n "$(git config --global user.name)" && test -n "$(git config --global user.email)"'
+  check "more than 2 GB free on the card" "delete old files or projects you don't need" \
+    bash -c '[ "$(df --output=avail -k / | tail -1)" -gt 2097152 ]'
+  echo
+  echo "Also check by hand: Tailscale key expiry disabled for this Pi (login.tailscale.com/admin/machines)."
+  echo
+  if [ "$problems" = 0 ]; then ok "all checks passed"; else warn "${problems} problem(s) found"; return 1; fi
+}
+
+cmd_update() {
+  log "Updating homebase"
+  git -C "$HB_ROOT" pull --ff-only
+  if [ "${1:-}" = "--system" ]; then
+    log "Installing Raspberry Pi OS updates"
+    sudo apt-get update && sudo apt-get full-upgrade -y
+  fi
+  "$HB_ROOT/install.sh"
+  if [ -f /run/reboot-required ]; then warn "a reboot is needed to finish updates: sudo reboot"; fi
+}
+
+cmd_backup() {
+  local dev="${1:-}" root_disk
+  root_disk="$(lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null || true)"
+  if [ -z "$dev" ]; then
+    cat <<EOF
+Back up this whole system onto a spare microSD card:
+  1. Put the spare card in a USB card reader and plug it into the Pi.
+  2. Find it in the list below (TRAN = usb). Don't pick ${root_disk:-the system disk}: that's the running system.
+  3. Run: homebase backup <name>     (e.g. homebase backup sda)
+Everything on the spare card is erased. If the main card ever dies, put the
+spare card in the Pi and it boots exactly like this one did.
+
+EOF
+    lsblk -d -o NAME,SIZE,TRAN,MODEL
+    return
+  fi
+  dev="${dev#/dev/}"
+  [ -b "/dev/$dev" ] || die "/dev/$dev not found (run 'homebase backup' to list disks)"
+  [ "$dev" != "$root_disk" ] || die "/dev/$dev is the running system; pick the spare card"
+  if ! have rpi-clone; then
+    warn "This needs rpi-clone (an open-source Pi backup tool: github.com/geerlingguy/rpi-clone)."
+    read -r -p "Install it now? [y/N] " answer
+    [[ "$answer" =~ ^[Yy] ]] || die "cancelled"
+    curl -fsSL https://raw.githubusercontent.com/geerlingguy/rpi-clone/master/install | sudo bash
+  fi
+  log "Cloning the system to /dev/$dev (rpi-clone will ask you to confirm)"
+  sudo rpi-clone "$dev"
+}
+
+main() {
+  local cmd="${1:-help}"
+  [ $# -gt 0 ] && shift
+  case "$cmd" in
+    status)  cmd_status "$@" ;;
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    restart) cmd_restart ;;
+    attach)  cmd_attach ;;
+    logs)    cmd_logs "$@" ;;
+    new)     cmd_new "$@" ;;
+    list)    cmd_list ;;
+    wake)    cmd_wake "$@" ;;
+    doctor)  cmd_doctor ;;
+    update)  cmd_update "$@" ;;
+    backup)  cmd_backup "$@" ;;
+    config)  cmd_config "$@" ;;
+    help|-h|--help) usage ;;
+    *) bad "unknown command: $cmd"; echo; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

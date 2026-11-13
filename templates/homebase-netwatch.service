@@ -1,0 +1,6 @@
+[Unit]
+Description=homebase: check the internet connection and heal WiFi if needed
+
+[Service]
+Type=oneshot
+ExecStart=@ROOT@/lib/netwatch.sh
