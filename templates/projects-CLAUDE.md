@@ -42,4 +42,5 @@ their phone and computers through Claude Code Remote Control. This folder
 - `homebase status`: health overview (network, Tailscale, disk, temperature)
 - `homebase doctor`: checks the setup and says how to fix problems
 - `homebase list` / `homebase new <name>`: projects
-- `homebase wake pc`: wake the owner's PC over the Ethernet cable
+- `homebase wake pc`: wake the owner's PC over the Ethernet cable (no password
+  needed; run it whenever the owner asks)
