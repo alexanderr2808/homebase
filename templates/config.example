@@ -13,3 +13,9 @@ PC_MAC=""
 
 # Pi network port the PC is cabled to.
 WOL_IFACE="eth0"
+
+# Reasoning effort for the always-on session (low, medium, high, xhigh, max).
+CLAUDE_EFFORT="xhigh"
+
+# Auto-compact when the context window is this % full.
+CLAUDE_AUTOCOMPACT_PCT="40"

@@ -15,7 +15,9 @@ projects from your phone or computer from anywhere, using Claude Code
 What the installer sets up:
 
 - **Always-on Claude session** in `~/projects` (systemd + tmux), restarted
-  automatically if it exits and started at every boot.
+  automatically if it exits and started at every boot. It runs at effort
+  `xhigh` and auto-compacts at 40% context; change these with
+  `homebase config CLAUDE_EFFORT …` / `CLAUDE_AUTOCOMPACT_PCT …`.
 - **`homebase` command** for status, projects, waking the PC, backups and updates.
 - **`~/projects/CLAUDE.md`**: rules that keep Claude's projects organized and
   stop it from breaking the system.
